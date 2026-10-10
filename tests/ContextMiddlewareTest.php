@@ -20,7 +20,7 @@ final class ContextMiddlewareTest
 {
     public function publishesAttributesAndCancelsAfterHandler(): void
     {
-        $request = new ServerRequest('GET', '/')->withHeader('X-Correlation-ID', 'abc');
+        $request = (new ServerRequest('GET', '/'))->withHeader('X-Correlation-ID', 'abc');
         $middleware = new ContextMiddleware(timeout: 1.0);
         $handler = new class implements RequestHandlerInterface {
             public bool $terminated = false;
