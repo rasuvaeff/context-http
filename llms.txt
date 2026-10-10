@@ -1,0 +1,19 @@
+# context-http
+
+Install with `composer require rasuvaeff/context-http`.
+
+`ContextMiddleware` is PSR-15 and puts `Rasuvaeff\\Context\\Context` and
+`ContextController` in request attributes. It creates a timeout context for
+each request and cancels the controller in `finally`.
+
+`PreflightClient` decorates PSR-18: it asserts the context before and after
+`sendRequest()`. PSR-18 cannot receive transport timeout options.
+
+`ContextClient` accepts a Guzzle-compatible object and sends
+`send(RequestInterface, Context)`. Remaining milliseconds are mapped to
+Guzzle `timeout` and `connect_timeout` seconds.
+
+All adapters are cooperative. They prevent work from starting or being
+consumed after termination; they cannot interrupt a generic blocking PSR-18
+call. Use `ContextClickHouseClient` from `rasuvaeff/clickhouse-toolkit` for
+ClickHouse's native execution budget, and check contexts between queue steps.
