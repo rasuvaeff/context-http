@@ -33,8 +33,6 @@ jobs:
           coverage: none
           extensions: json, mbstring
           tools: composer:v2
-      - name: Register unreleased context dependency
-        run: composer config repositories.context vcs https://github.com/rasuvaeff/context
       - name: Install dependencies
         run: composer install --no-interaction --no-progress --prefer-dist
       - name: Normalize Composer metadata
