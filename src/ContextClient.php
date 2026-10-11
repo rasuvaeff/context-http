@@ -4,39 +4,72 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context\Http;
 
-use Closure;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Rasuvaeff\Context\Context;
+use Rasuvaeff\Context\ContextExpiredException;
+use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
 
 /**
  * Guzzle adapter with an explicit context argument.
  *
- * The client is intentionally typed as object: Guzzle remains an optional
- * dependency of this package. The object must expose Guzzle's request()
- * method and return a PSR-7 response.
+ * Guzzle stays an optional dependency, so the client is typed as object;
+ * the constructor rejects an object without Guzzle's `request()` method.
+ * The remaining budget becomes Guzzle's `timeout`/`connect_timeout`, the
+ * request body is sent as its stream and the protocol version is kept.
+ * `http_errors` is off: a 4xx/5xx response is returned, as with PSR-18.
+ * A transport failure after the budget ran out surfaces as
+ * `ContextExpiredException` with the transport exception as its cause.
+ *
+ * @api
  */
 final readonly class ContextClient
 {
-    public function __construct(private object $client) {}
+    private OutboundHeaders $outbound;
+
+    public function __construct(
+        private object $client,
+        ?string $deadlineHeader = null,
+        ?string $correlationHeader = null,
+    ) {
+        if (!method_exists($client, 'request')) {
+            throw new \InvalidArgumentException(sprintf('%s has no Guzzle-compatible request() method', $client::class));
+        }
+
+        $this->outbound = new OutboundHeaders($deadlineHeader, $correlationHeader);
+    }
 
     public function send(RequestInterface $request, Context $context): ResponseInterface
     {
         $context->assertActive();
+        $request = $this->outbound->apply($request, $context);
+
+        $options = [
+            'headers' => $request->getHeaders(),
+            'body' => $request->getBody(),
+            'version' => $request->getProtocolVersion(),
+            'http_errors' => false,
+        ];
         $remainingMs = $context->remainingMs();
-        $timeout = $remainingMs === null ? null : $remainingMs / 1000.0;
-        $options = [];
-        if ($timeout !== null) {
-            $options['timeout'] = $timeout;
-            $options['connect_timeout'] = $timeout;
+        if ($remainingMs !== null) {
+            $options['timeout'] = $remainingMs / 1000.0;
+            $options['connect_timeout'] = $remainingMs / 1000.0;
         }
 
-        $requester = Closure::fromCallable([$this->client, 'request']);
-        $response = $requester(
-            $request->getMethod(),
-            (string) $request->getUri(),
-            $options + ['headers' => $request->getHeaders(), 'body' => (string) $request->getBody()],
-        );
+        try {
+            $requester = \Closure::fromCallable([$this->client, 'request']);
+            /** @var mixed $response */
+            $response = $requester($request->getMethod(), (string) $request->getUri(), $options);
+        } catch (\Throwable $failure) {
+            try {
+                $context->assertActive();
+            } catch (ContextExpiredException $expired) {
+                throw new ContextExpiredException($expired->deadlineNs(), $failure);
+            }
+
+            throw $failure;
+        }
+
         $context->assertActive();
 
         if (!$response instanceof ResponseInterface) {

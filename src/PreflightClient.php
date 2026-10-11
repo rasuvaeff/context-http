@@ -9,6 +9,7 @@ use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Rasuvaeff\Context\Context;
+use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
 
 /**
  * Checks a context around a generic PSR-18 request.
@@ -16,14 +17,24 @@ use Rasuvaeff\Context\Context;
  * PSR-18 has no transport-options argument, so this decorator cannot impose
  * a timeout on an in-flight synchronous client. It prevents work from
  * starting after termination and prevents a terminated response from being
- * consumed by the caller.
+ * consumed by the caller. With `deadlineHeader` it tells the downstream
+ * service how much time is left; with `correlationHeader` it forwards the
+ * context's `CorrelationId` (an explicit header on the request wins).
+ *
+ * @api
  */
 final readonly class PreflightClient implements ClientInterface
 {
+    private OutboundHeaders $outbound;
+
     public function __construct(
         private ClientInterface $client,
         private Context $context,
-    ) {}
+        ?string $deadlineHeader = null,
+        ?string $correlationHeader = null,
+    ) {
+        $this->outbound = new OutboundHeaders($deadlineHeader, $correlationHeader);
+    }
 
     /**
      * @throws ClientExceptionInterface
@@ -32,7 +43,7 @@ final readonly class PreflightClient implements ClientInterface
     public function sendRequest(RequestInterface $request): ResponseInterface
     {
         $this->context->assertActive();
-        $response = $this->client->sendRequest($request);
+        $response = $this->client->sendRequest($this->outbound->apply($request, $this->context));
         $this->context->assertActive();
 
         return $response;
