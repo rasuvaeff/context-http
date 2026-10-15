@@ -42,8 +42,9 @@ final readonly class PreflightClient implements ClientInterface
     #[\Override]
     public function sendRequest(RequestInterface $request): ResponseInterface
     {
+        $remainingMs = $this->context->remainingMs();
         $this->context->assertActive();
-        $response = $this->client->sendRequest($this->outbound->apply($request, $this->context));
+        $response = $this->client->sendRequest($this->outbound->apply($request, $this->context, $remainingMs));
         $this->context->assertActive();
 
         return $response;

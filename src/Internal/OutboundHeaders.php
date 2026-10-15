@@ -20,9 +20,12 @@ final readonly class OutboundHeaders
         private ?string $correlationHeader,
     ) {}
 
-    public function apply(RequestInterface $request, Context $context): RequestInterface
+    /**
+     * `$remainingMs` is read by the caller before its `assertActive()`, so
+     * the header never carries the `0` of an expired context.
+     */
+    public function apply(RequestInterface $request, Context $context, ?float $remainingMs): RequestInterface
     {
-        $remainingMs = $context->remainingMs();
         if ($this->deadlineHeader !== null && $remainingMs !== null) {
             $request = $request->withHeader($this->deadlineHeader, (string) (int) $remainingMs);
         }

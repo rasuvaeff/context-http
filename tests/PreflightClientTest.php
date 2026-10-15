@@ -12,10 +12,12 @@ use Psr\Http\Message\ResponseInterface;
 use Rasuvaeff\Context\Context;
 use Rasuvaeff\Context\ContextCancelledException;
 use Rasuvaeff\Context\ContextController;
+use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Http\CorrelationId;
 use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
 use Rasuvaeff\Context\Http\PreflightClient;
 use Rasuvaeff\Context\Http\Tests\Support\FakeTimeSource;
+use Rasuvaeff\Context\Http\Tests\Support\SteppingTimeSource;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -101,6 +103,25 @@ final class PreflightClientTest
             ->sendRequest(new Request('GET', '/'));
 
         Assert::false($inner->request?->hasHeader('X-Request-Timeout-Ms'));
+    }
+
+    public function aDeadlinePassingBeforeSendingSendsNothing(): void
+    {
+        // Every clock read moves 0.6 s: the deadline passes between the
+        // check and the budget header, which would otherwise carry "0".
+        [$context] = Context::background(new SteppingTimeSource(600_000_000))->withTimeout(1.0);
+        $inner = $this->recordingClient();
+
+        try {
+            (new PreflightClient($inner, $context, deadlineHeader: 'X-Request-Timeout-Ms'))
+                ->sendRequest(new Request('GET', '/'));
+        } catch (ContextExpiredException) {
+            Assert::same($inner->calls, 0);
+
+            return;
+        }
+
+        throw new \LogicException('an expiry was expected, the request was sent');
     }
 
     /**
