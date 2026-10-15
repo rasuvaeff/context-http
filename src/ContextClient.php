@@ -9,6 +9,7 @@ use Psr\Http\Message\ResponseInterface;
 use Rasuvaeff\Context\Context;
 use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
+use Rasuvaeff\Context\WireCodec;
 
 /**
  * Guzzle adapter with an explicit context argument.
@@ -31,12 +32,14 @@ final readonly class ContextClient
         private object $client,
         ?string $deadlineHeader = null,
         ?string $correlationHeader = null,
+        ?WireCodec $wireCodec = null,
+        string $baggageHeader = 'baggage',
     ) {
         if (!method_exists($client, 'request')) {
             throw new \InvalidArgumentException(sprintf('%s has no Guzzle-compatible request() method', $client::class));
         }
 
-        $this->outbound = new OutboundHeaders($deadlineHeader, $correlationHeader);
+        $this->outbound = new OutboundHeaders($deadlineHeader, $correlationHeader, $wireCodec, $baggageHeader);
     }
 
     public function send(RequestInterface $request, Context $context): ResponseInterface

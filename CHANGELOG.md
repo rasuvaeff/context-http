@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 — 2026-10-15
+
+- Added: request-scoped values cross services in the W3C `baggage` header through a `rasuvaeff/context` `WireCodec` (#9). `ContextMiddleware(wireCodec:)` reads allow-listed values (invalid ones dropped, never thrown); `PreflightClient`/`ContextClient` (`wireCodec:`) append the context's values, keeping members already present and never overriding a key; percent-encoding and the 8192-byte / 180-member limits. Outgoing baggage is opt-in per client instance — never configure it on a client that calls a third party.
+- Requires `rasuvaeff/context` ^0.3.
+- CI: property regression corpus is cached between runs.
+
 ## 0.2.2 — 2026-10-15
 
 - Allow `rasuvaeff/context` ^0.3, so the package installs next to context 0.3. No code changes: nothing used here changed in 0.3 (all additions).

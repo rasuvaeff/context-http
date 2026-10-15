@@ -10,6 +10,7 @@ use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Rasuvaeff\Context\Context;
 use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
+use Rasuvaeff\Context\WireCodec;
 
 /**
  * Checks a context around a generic PSR-18 request.
@@ -32,8 +33,10 @@ final readonly class PreflightClient implements ClientInterface
         private Context $context,
         ?string $deadlineHeader = null,
         ?string $correlationHeader = null,
+        ?WireCodec $wireCodec = null,
+        string $baggageHeader = 'baggage',
     ) {
-        $this->outbound = new OutboundHeaders($deadlineHeader, $correlationHeader);
+        $this->outbound = new OutboundHeaders($deadlineHeader, $correlationHeader, $wireCodec, $baggageHeader);
     }
 
     /**
