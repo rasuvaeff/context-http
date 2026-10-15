@@ -15,6 +15,7 @@ use Rasuvaeff\Context\Http\CorrelationId;
 use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
 use Rasuvaeff\Context\Http\Tests\Support\FakeTimeSource;
 use Rasuvaeff\Context\Http\Tests\Support\RecordingGuzzle;
+use Rasuvaeff\Context\Http\Tests\Support\SteppingTimeSource;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -118,6 +119,25 @@ final class ContextClientTest
         }
 
         throw new \LogicException('an expiry was expected');
+    }
+
+    public function aDeadlinePassingDuringSendNeverYieldsAnUnboundedRequest(): void
+    {
+        // Every clock read moves 0.6 s: the deadline passes between the
+        // checks inside send(). curl takes a 0 timeout as "no timeout".
+        [$context] = Context::background(new SteppingTimeSource(600_000_000))->withTimeout(1.0);
+        $guzzle = RecordingGuzzle::responding(new Response(204));
+
+        try {
+            (new ContextClient($guzzle, deadlineHeader: 'X-Request-Timeout-Ms'))
+                ->send(new Request('GET', 'https://example.test'), $context);
+        } catch (ContextExpiredException) {
+            Assert::null($guzzle->call);
+
+            return;
+        }
+
+        throw new \LogicException('an expiry was expected, the request was sent');
     }
 
     public function aTransportFailureWhileActiveIsRethrown(): void

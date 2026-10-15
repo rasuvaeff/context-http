@@ -27,6 +27,27 @@ a request-scoped deadline, cancellation and correlation id, propagated across se
 composer require rasuvaeff/context-http
 ```
 
+## Limitations
+
+These adapters bound how long a request **waits**; they do not abort work
+already running. See the transport matrix in
+[`rasuvaeff/context`](https://github.com/rasuvaeff/context#limitations).
+
+- **`ContextMiddleware` does not stop the handler.** The deadline is observed
+  only where the handler calls `assertActive()` (directly or through an
+  adapter); the 504/499 mapping applies to the exception that call throws.
+  It does not detect a client disconnect either — `499` is produced only if
+  your code cancels the controller. Keep the budget below the server's own
+  limit (PHP-FPM `request_terminate_timeout`, PHP `max_execution_time`), or
+  the worker is killed before the context can answer.
+- **`PreflightClient` cannot time out a request.** PSR-18 has no per-request
+  options: it checks before sending and after receiving, and the client's
+  own timeout decides how long the call blocks.
+- **`ContextClient` maps only the remaining budget.** The synchronous Guzzle
+  call returns at that timeout; a `cancel()` issued meanwhile is seen only
+  after it returns. `remainingMs()` is at least 1 ms while the context is
+  active, because curl treats a zero timeout as no timeout at all.
+
 ## Usage
 
 ### `ContextMiddleware` (PSR-15)

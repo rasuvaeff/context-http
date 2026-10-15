@@ -41,8 +41,12 @@ final readonly class ContextClient
 
     public function send(RequestInterface $request, Context $context): ResponseInterface
     {
+        // Read the budget before the check: once assertActive() passes it
+        // cannot be the 0.0 of an expired context, which curl would take
+        // as "no timeout".
+        $remainingMs = $context->remainingMs();
         $context->assertActive();
-        $request = $this->outbound->apply($request, $context);
+        $request = $this->outbound->apply($request, $context, $remainingMs);
 
         $options = [
             'headers' => $request->getHeaders(),
@@ -50,7 +54,6 @@ final readonly class ContextClient
             'version' => $request->getProtocolVersion(),
             'http_errors' => false,
         ];
-        $remainingMs = $context->remainingMs();
         if ($remainingMs !== null) {
             $options['timeout'] = $remainingMs / 1000.0;
             $options['connect_timeout'] = $remainingMs / 1000.0;
