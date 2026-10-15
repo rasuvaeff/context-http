@@ -83,6 +83,8 @@ $correlationId = $request->getAttribute(CorrelationId::class);   // always set
 | `correlationIdGenerator` | `CorrelationId::generate(...)` | Used when the header is missing or invalid |
 | `responseFactory` | `null` | When set, `ContextExpiredException` → `expiredStatus`, `ContextCancelledException` → `cancelledStatus`; otherwise they propagate |
 | `expiredStatus` / `cancelledStatus` | `504` / `499` | Mapped status codes |
+| `wireCodec` | `null` | A `rasuvaeff/context` `WireCodec`: allow-listed request values are read from the `baggage` header |
+| `baggageHeader` | `baggage` | Header carrying the values (W3C Baggage) |
 
 Every request gets a `CorrelationId`: the incoming header when valid,
 otherwise a freshly generated one. The value is also stored in the context
@@ -136,6 +138,32 @@ caller ──X-Request-Timeout-Ms: 800──▶ ContextMiddleware(deadlineHeader
 Use the same header name on both sides. The receiving middleware never
 trusts a budget longer than its own `timeout`.
 
+### Request values across services (`baggage`)
+
+The budget crosses services on its own header; request-scoped values (tenant,
+locale, experiment flags) travel in the standard W3C `baggage` header through a
+`rasuvaeff/context` `WireCodec`: only classes implementing `WireValue`, under
+aliases you allow.
+
+```php
+use Rasuvaeff\Context\WireCodec;
+
+$codec = new WireCodec(['tenant' => TenantId::class, 'locale' => Locale::class]);
+
+// incoming: baggage: tenant=acme,locale=de → $context->value(TenantId::class)
+$middleware = new ContextMiddleware(timeout: 5.0, deadlineHeader: 'X-Request-Timeout-Ms', wireCodec: $codec);
+
+// outgoing to YOUR services only — see Security
+$internal = new ContextClient($guzzle, deadlineHeader: 'X-Request-Timeout-Ms', wireCodec: $codec);
+```
+
+| Side | Behaviour |
+|---|---|
+| Incoming | Members with an allow-listed alias are decoded through `WireValue::fromWire()`; an invalid value, an unknown key or a malformed member is dropped, never thrown; a header over 8192 bytes is ignored. The values never touch the budget |
+| Outgoing | The context's values are appended to `baggage`; members already present (e.g. from the OpenTelemetry SDK) are kept verbatim and a key already present is never overridden. Values are percent-encoded; an entry that would exceed 8192 bytes or 180 members is dropped |
+
+Trace ids are not carried here: that is `traceparent`, owned by OpenTelemetry.
+
 ### Queue consumers
 
 Keep the controller with the message owner and derive a fresh context from
@@ -154,6 +182,14 @@ queue implementation.
 
 ## Security
 
+- **Outgoing `baggage` is sent with every request of that client.** Pass a
+  `wireCodec` only to clients that call your own services: a client for
+  Stripe or any third-party API configured with a codec would hand them your
+  tenant ids and flags. Use separate client instances for internal and
+  external calls.
+- **Incoming `baggage` is untrusted.** Only allow-listed aliases are read, and
+  each value goes through your `WireValue::fromWire()` — validate there and
+  throw on anything unexpected; the middleware drops such values.
 - **Correlation ids are validated**: 1–128 characters of `A-Z a-z 0-9 . _ : -`.
   An invalid incoming value is replaced, never logged or forwarded — no log
   injection, no unbounded header values.

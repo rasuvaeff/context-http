@@ -57,3 +57,18 @@ new CorrelationId($s);        // InvalidArgumentException when invalid
 
 Use the same `deadlineHeader` name on the receiving middleware and the sending
 client to share one deadline across a call chain.
+
+## baggage (0.3.0)
+
+```php
+$codec = new Rasuvaeff\Context\WireCodec(['tenant' => TenantId::class]);   // TenantId implements WireValue
+new ContextMiddleware(timeout: 5.0, wireCodec: $codec, baggageHeader: 'baggage');
+new ContextClient($guzzle, wireCodec: $codec);          // ONLY for clients calling your own services
+new PreflightClient($psr18, $ctx, wireCodec: $codec);
+```
+
+- In: allow-listed aliases via `fromWire()`; invalid/unknown/malformed dropped,
+  never thrown; header > 8192 bytes ignored; budget unaffected.
+- Out: appended to existing `baggage`; existing members kept verbatim, an
+  existing key never overridden; percent-encoded; 8192 bytes / 180 members.
+- Leak warning: baggage goes with EVERY request of that client.

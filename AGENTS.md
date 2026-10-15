@@ -65,6 +65,12 @@ make release-check
   propagate unchanged.
 - An explicit correlation header on an outgoing request wins over the
   context's value.
+- **`baggage`** (`Internal\Baggage`): incoming members are decoded only for
+  the codec's aliases, through `WireCodec::decode()` on a child of the request
+  context (cap `PHP_INT_MAX`, so the request deadline wins; the request
+  controller cancels it). Outgoing: existing members kept verbatim, an
+  existing key never overridden, values `rawurlencode`d, 8192 bytes / 180
+  members. Outgoing baggage is opt-in per client — never make it a default.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,
   explicit types.
 - `examples/` is part of the public contract: keep scripts runnable and update

@@ -7,6 +7,7 @@ namespace Rasuvaeff\Context\Http\Internal;
 use Psr\Http\Message\RequestInterface;
 use Rasuvaeff\Context\Context;
 use Rasuvaeff\Context\Http\CorrelationId;
+use Rasuvaeff\Context\WireCodec;
 
 /**
  * Adds the remaining budget and the correlation id to an outgoing request.
@@ -18,6 +19,8 @@ final readonly class OutboundHeaders
     public function __construct(
         private ?string $deadlineHeader,
         private ?string $correlationHeader,
+        private ?WireCodec $wireCodec = null,
+        private string $baggageHeader = 'baggage',
     ) {}
 
     /**
@@ -32,9 +35,18 @@ final readonly class OutboundHeaders
 
         $correlationId = $context->value(CorrelationId::class);
         if ($this->correlationHeader !== null && $correlationId instanceof CorrelationId && !$request->hasHeader($this->correlationHeader)) {
-            return $request->withHeader($this->correlationHeader, $correlationId->value);
+            $request = $request->withHeader($this->correlationHeader, $correlationId->value);
         }
 
-        return $request;
+        if (!$this->wireCodec instanceof WireCodec) {
+            return $request;
+        }
+
+        $baggage = Baggage::merge(
+            $request->getHeaderLine($this->baggageHeader),
+            $this->wireCodec->encode($context)['values'],
+        );
+
+        return $baggage === '' ? $request : $request->withHeader($this->baggageHeader, $baggage);
     }
 }

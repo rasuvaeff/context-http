@@ -14,7 +14,9 @@ use Rasuvaeff\Context\Context;
 use Rasuvaeff\Context\ContextCancelledException;
 use Rasuvaeff\Context\ContextController;
 use Rasuvaeff\Context\ContextExpiredException;
+use Rasuvaeff\Context\Http\Internal\Baggage;
 use Rasuvaeff\Context\TimeSource;
+use Rasuvaeff\Context\WireCodec;
 
 /**
  * Creates and owns one context for a PSR-15 request.
@@ -27,6 +29,9 @@ use Rasuvaeff\Context\TimeSource;
  * - With a `responseFactory`, a `ContextExpiredException` escaping the
  *   handler becomes `expiredStatus` (504) and a `ContextCancelledException`
  *   becomes `cancelledStatus` (499); without one they propagate.
+ * - With a `wireCodec`, allow-listed values are read from the W3C `baggage`
+ *   header through `WireValue::fromWire()`; an invalid value is dropped,
+ *   never thrown — the header is untrusted input.
  *
  * @api
  */
@@ -56,6 +61,8 @@ final readonly class ContextMiddleware implements MiddlewareInterface
         private ?ResponseFactoryInterface $responseFactory = null,
         private int $expiredStatus = 504,
         private int $cancelledStatus = 499,
+        private ?WireCodec $wireCodec = null,
+        private string $baggageHeader = 'baggage',
     ) {
         if (is_float($timeout) && !is_finite($timeout)) {
             throw new \InvalidArgumentException('Timeout must be finite');
@@ -69,6 +76,17 @@ final readonly class ContextMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         [$context, $controller] = Context::background($this->timeSource)->withTimeout($this->timeoutFor($request));
+
+        if ($this->wireCodec instanceof WireCodec) {
+            // The values land on a child that inherits the request deadline
+            // (the cap is unlimited, so the parent's deadline wins) and dies
+            // with the request controller below.
+            [$context] = $this->wireCodec->decode(
+                ['values' => Baggage::parse($request->getHeaderLine($this->baggageHeader))],
+                $context,
+                maxBudgetMs: \PHP_INT_MAX,
+            );
+        }
 
         $incoming = $request->getHeaderLine($this->correlationHeader);
         $correlationId = CorrelationId::isValid($incoming)
