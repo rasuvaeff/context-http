@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Mutation testing now counts code the tests execute but do not name in `#[Covers]` (`infection --threads=max --with-uncovered`); the `PublicVisibility` mutator is off and default values in parameter lists are ignored. No `src/` changes.
+
 ## 0.3.0 — 2026-10-15
 
 - Added: request-scoped values cross services in the W3C `baggage` header through a `rasuvaeff/context` `WireCodec` (#9). `ContextMiddleware(wireCodec:)` reads allow-listed values (invalid ones dropped, never thrown); `PreflightClient`/`ContextClient` (`wireCodec:`) append the context's values, keeping members already present and never overriding a key; percent-encoding and the 8192-byte / 180-member limits. Outgoing baggage is opt-in per client instance — never configure it on a client that calls a third party.
