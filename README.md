@@ -16,7 +16,7 @@ a request-scoped deadline, cancellation and correlation id, propagated across se
 ## Requirements
 
 - PHP 8.3+
-- `rasuvaeff/context` ^0.2
+- `rasuvaeff/context` ^0.5
 - `psr/http-message` ^2.0, `psr/http-factory` ^1.0, `psr/http-client` ^1.0,
   `psr/http-server-handler` ^1.0, `psr/http-server-middleware` ^1.0
 - `guzzlehttp/guzzle` ^7 only for `ContextClient` (optional)
@@ -79,15 +79,18 @@ $correlationId = $request->getAttribute(CorrelationId::class);   // always set
 | `correlationHeader` | `X-Correlation-ID` | Incoming correlation header |
 | `contextAttribute` / `controllerAttribute` / `correlationAttribute` | class names | Request attribute names |
 | `timeSource` | `HrTimeSource` | Monotonic clock (tests) |
-| `deadlineHeader` | `null` | Incoming budget in whole milliseconds (1–999999999); it only **shortens** the timeout — a longer or malformed value is ignored |
+| `deadlineHeader` | `null` | Incoming budget in whole milliseconds, read by `WireCodec::budgetFromWire()`: 1–9 digits (leading zeros allowed), value 1–999999999; it only **shortens** the timeout — a longer or malformed value is ignored |
 | `correlationIdGenerator` | `CorrelationId::generate(...)` | Used when the header is missing or invalid |
 | `responseFactory` | `null` | When set, `ContextExpiredException` → `expiredStatus`, `ContextCancelledException` → `cancelledStatus`; otherwise they propagate |
-| `expiredStatus` / `cancelledStatus` | `504` / `499` | Mapped status codes |
+| `expiredStatus` / `cancelledStatus` | `504` / `499` | Mapped status codes; outside 100–599 the constructor throws `InvalidArgumentException` |
 | `wireCodec` | `null` | A `rasuvaeff/context` `WireCodec`: allow-listed request values are read from the `baggage` header |
 | `baggageHeader` | `baggage` | Header carrying the values (W3C Baggage) |
+| `parent` | `null` | Every request context derives from it — e.g. a server's shutdown context in RoadRunner; `timeSource` is then ignored. Default: `Context::background()` |
+| `correlationIdResolver` | `null` | `Closure(ServerRequestInterface): ?CorrelationId` — an id the application already has; `null` falls back to the header |
+| `correlationResponseHeader` | `null` | When set, the correlation id is written to the response under this name (a header the handler set wins) |
 
-Every request gets a `CorrelationId`: the incoming header when valid,
-otherwise a freshly generated one. The value is also stored in the context
+Every request gets a `CorrelationId`: the resolver's id when it returns one,
+else the incoming header when valid, otherwise a freshly generated one. The value is also stored in the context
 (`$context->value(CorrelationId::class)`), so outbound clients can forward it.
 
 ### `PreflightClient` (PSR-18)
@@ -100,8 +103,10 @@ $client = new PreflightClient(
     $context,
     deadlineHeader: 'X-Request-Timeout-Ms',   // optional: send the remaining budget
     correlationHeader: 'X-Correlation-ID',    // optional: forward the correlation id
+    expireTransportFailures: true,            // optional: a failure after the deadline → ContextExpiredException
 );
 $response = $client->sendRequest($request);
+$next = $client->withContext($otherContext);  // same configuration, another request's context
 ```
 
 Checks `assertActive()` before starting a request and after receiving the
@@ -109,6 +114,11 @@ response. PSR-18 has no transport options, so it **cannot impose a timeout on
 a blocking client call** — configure the client's own timeout, or use
 `ContextClient` with Guzzle. An explicit correlation header on the request
 wins over the context's.
+
+With `expireTransportFailures: true`, a client exception thrown after the
+deadline passed becomes a `ContextExpiredException` whose `previous` is the
+original (after a cancellation, a `ContextCancelledException`), as in
+`ContextClient`. It is off by default because it changes the exception type.
 
 ### `ContextClient` (Guzzle)
 
@@ -120,7 +130,9 @@ $response = (new ContextClient($guzzle, deadlineHeader: 'X-Request-Timeout-Ms'))
 $controller->cancel();
 ```
 
-- The remaining budget becomes Guzzle's `timeout` and `connect_timeout`.
+- The remaining budget (`Context::budgetMs()`) becomes Guzzle's `timeout` and
+  `connect_timeout`. With `maxTimeout: 1.0` (seconds) they never exceed that
+  limit, even when the budget is longer; without a deadline nothing is set.
 - The request body is sent as its stream; the protocol version is kept.
 - `http_errors` is off: a 4xx/5xx response is **returned**, as with PSR-18.
 - A transport failure after the budget ran out is a `ContextExpiredException`
@@ -176,8 +188,8 @@ queue implementation.
 | Class | Description |
 |---|---|
 | `ContextMiddleware` | PSR-15: request context, controller and correlation id attributes; budget header; exception mapping |
-| `PreflightClient` | PSR-18 decorator: pre/post context checks, outbound budget and correlation headers |
-| `ContextClient` | Guzzle-compatible adapter: budget → timeouts, PSR-18 error semantics, expiry mapping |
+| `PreflightClient` | PSR-18 decorator: pre/post context checks, outbound budget and correlation headers, opt-in expiry mapping, `withContext()` |
+| `ContextClient` | Guzzle-compatible adapter: budget → timeouts (capped by `maxTimeout`), PSR-18 error semantics, expiry mapping |
 | `CorrelationId` | Validated correlation id (`isValid()`, `generate()`) |
 
 ## Security
@@ -194,7 +206,8 @@ queue implementation.
   An invalid incoming value is replaced, never logged or forwarded — no log
   injection, no unbounded header values.
 - **Incoming budgets are untrusted**: only whole milliseconds in 1–999999999
-  are accepted, and they can only shorten the configured timeout.
+  (1–9 digits, the `WireCodec::budgetFromWire()` rule) are accepted, and they
+  can only shorten the configured timeout.
 - Context exceptions mapped to responses carry no details; everything else
   propagates to your error handler.
 - All adapters are cooperative: they prevent work from starting or a response
