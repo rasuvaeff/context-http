@@ -70,5 +70,6 @@ new PreflightClient($psr18, $ctx, wireCodec: $codec);
 - In: allow-listed aliases via `fromWire()`; invalid/unknown/malformed dropped,
   never thrown; header > 8192 bytes ignored; budget unaffected.
 - Out: appended to existing `baggage`; existing members kept verbatim, an
-  existing key never overridden; percent-encoded; 8192 bytes / 180 members.
+  existing key never overridden; percent-encoded; 8192 bytes / 180 members;
+  an existing header over 8192 bytes passes through unchanged, nothing added.
 - Leak warning: baggage goes with EVERY request of that client.

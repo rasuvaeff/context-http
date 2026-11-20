@@ -7,8 +7,9 @@ namespace Rasuvaeff\Context\Http\Internal;
 /**
  * The W3C `baggage` header: `key=value;property, key2=value2`. Values are
  * percent-encoded; properties are kept on members we pass through and ignored
- * on read. The spec's propagation limits (8192 bytes, 180 members) bound
- * both what is read and what is added.
+ * on read. A header over 8192 bytes reads as empty and is passed through
+ * untouched; the 180-member limit bounds only what is added — `parse()`
+ * reads every well-formed member of a header within the byte limit.
  *
  * @internal
  */
@@ -54,13 +55,19 @@ final class Baggage
      * `$existing` with `$values` appended: members already present are kept
      * verbatim (another propagator's data), a key already present is never
      * overridden, and an entry that would break the size or member limit is
-     * dropped.
+     * dropped. An oversized `$existing` is returned unchanged: nothing can be
+     * added to it, and it is not ours to drop.
      *
-     * @param array<string, string> $values key => raw value
+     * @param array<array-key, string> $values key => raw value; a numeric key
+     *        (`'1'`) arrives as an int
      */
     public static function merge(string $existing, array $values): string
     {
-        $members = \strlen($existing) > self::MAX_BYTES ? [] : self::members($existing);
+        if (\strlen($existing) > self::MAX_BYTES) {
+            return $existing;
+        }
+
+        $members = self::members($existing);
         $present = [];
         foreach ($members as $member) {
             $pair = self::pair($member);
@@ -70,7 +77,8 @@ final class Baggage
         }
 
         $length = \strlen(implode(',', $members));
-        foreach ($values as $key => $value) {
+        foreach ($values as $rawKey => $value) {
+            $key = (string) $rawKey;
             if (isset($present[$key]) || preg_match(self::KEY_PATTERN, $key) !== 1 || \count($members) >= self::MAX_MEMBERS) {
                 continue;
             }

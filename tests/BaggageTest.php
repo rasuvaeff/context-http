@@ -107,9 +107,21 @@ final class BaggageTest
         Assert::true(str_ends_with($merged, ',first=1'));
     }
 
-    public function mergeDropsAnOversizedExistingHeader(): void
+    public function mergeKeepsAnOversizedExistingHeaderUnchanged(): void
     {
-        Assert::same(Baggage::merge(str_repeat('x', Baggage::MAX_BYTES + 1), ['tenant' => 'acme']), 'tenant=acme');
+        $existing = 'foreign=1,' . str_repeat('x', Baggage::MAX_BYTES);
+
+        Assert::same(Baggage::merge($existing, ['tenant' => 'acme']), $existing);
+    }
+
+    public function mergeAcceptsANumericKey(): void
+    {
+        Assert::same(Baggage::merge('tenant=acme', [1 => 'one', 0 => 'zero']), 'tenant=acme,1=one,0=zero');
+    }
+
+    public function mergeNeverDuplicatesANumericKeyAlreadyPresent(): void
+    {
+        Assert::same(Baggage::merge('1=theirs', [1 => 'ours']), '1=theirs');
     }
 
     /**
