@@ -160,7 +160,7 @@ $internal = new ContextClient($guzzle, deadlineHeader: 'X-Request-Timeout-Ms', w
 | Side | Behaviour |
 |---|---|
 | Incoming | Members with an allow-listed alias are decoded through `WireValue::fromWire()`; an invalid value, an unknown key or a malformed member is dropped, never thrown; a header over 8192 bytes is ignored. The values never touch the budget |
-| Outgoing | The context's values are appended to `baggage`; members already present (e.g. from the OpenTelemetry SDK) are kept verbatim and a key already present is never overridden. Values are percent-encoded; an entry that would exceed 8192 bytes or 180 members is dropped |
+| Outgoing | The context's values are appended to `baggage`; members already present (e.g. from the OpenTelemetry SDK) are kept verbatim and a key already present is never overridden. Values are percent-encoded; an entry that would exceed 8192 bytes or 180 members is dropped; an existing header already over 8192 bytes passes through unchanged and nothing is added |
 
 Trace ids are not carried here: that is `traceparent`, owned by OpenTelemetry.
 
