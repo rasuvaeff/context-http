@@ -15,7 +15,7 @@ a request-scoped deadline, cancellation and correlation id, propagated across se
 
 ## Requirements
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - `rasuvaeff/context` ^0.5
 - `psr/http-message` ^2.0, `psr/http-factory` ^1.0, `psr/http-client` ^1.0,
   `psr/http-server-handler` ^1.0, `psr/http-server-middleware` ^1.0
