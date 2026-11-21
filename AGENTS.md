@@ -18,7 +18,8 @@ Internal\OutboundHeaders`.
 2. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 3. **Never trust a header.** A correlation id is validated
    (`/^[A-Za-z0-9._:-]{1,128}\z/`, anchored with `\z`) and replaced when
-   invalid; an incoming budget is whole milliseconds 1–999999999 and may only
+   invalid; an incoming budget is read only through
+   `WireCodec::budgetFromWire()` (whole milliseconds 1–999999999) and may only
    shorten the configured timeout.
 4. **Preserve the public contract.** Update README + README.ru + llms.txt + tests with any API change.
 
@@ -66,9 +67,8 @@ make release-check
 - An explicit correlation header on an outgoing request wins over the
   context's value.
 - **`baggage`** (`Internal\Baggage`): incoming members are decoded only for
-  the codec's aliases, through `WireCodec::decode()` on a child of the request
-  context (cap `PHP_INT_MAX`, so the request deadline wins; the request
-  controller cancels it). Outgoing: existing members kept verbatim, an
+  the codec's aliases, through `WireCodec::decodeValues()` on the request
+  context (same state, so the request controller cancels it). Outgoing: existing members kept verbatim, an
   existing key never overridden, values `rawurlencode`d, 8192 bytes / 180
   members. Outgoing baggage is opt-in per client — never make it a default.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,

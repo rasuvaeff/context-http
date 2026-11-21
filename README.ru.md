@@ -16,7 +16,7 @@
 ## Требования
 
 - PHP 8.3+
-- `rasuvaeff/context` ^0.2
+- `rasuvaeff/context` ^0.5
 - `psr/http-message` ^2.0, `psr/http-factory` ^1.0, `psr/http-client` ^1.0,
   `psr/http-server-handler` ^1.0, `psr/http-server-middleware` ^1.0
 - `guzzlehttp/guzzle` ^7 — только для `ContextClient` (необязательно)
@@ -80,15 +80,18 @@ $correlationId = $request->getAttribute(CorrelationId::class);   // есть в�
 | `correlationHeader` | `X-Correlation-ID` | Входящий заголовок correlation id |
 | `contextAttribute` / `controllerAttribute` / `correlationAttribute` | имена классов | Имена атрибутов запроса |
 | `timeSource` | `HrTimeSource` | Монотонные часы (для тестов) |
-| `deadlineHeader` | `null` | Входящий бюджет в целых миллисекундах (1–999999999); он только **сокращает** таймаут — более длинное или некорректное значение игнорируется |
+| `deadlineHeader` | `null` | Входящий бюджет в целых миллисекундах, читается через `WireCodec::budgetFromWire()`: 1–9 цифр (ведущие нули допустимы), значение 1–999999999; он только **сокращает** таймаут — более длинное или некорректное значение игнорируется |
 | `correlationIdGenerator` | `CorrelationId::generate(...)` | Используется, когда заголовка нет или он невалиден |
 | `responseFactory` | `null` | Если задан: `ContextExpiredException` → `expiredStatus`, `ContextCancelledException` → `cancelledStatus`; иначе исключения пробрасываются |
-| `expiredStatus` / `cancelledStatus` | `504` / `499` | Коды ответа для этих исключений |
+| `expiredStatus` / `cancelledStatus` | `504` / `499` | Коды ответа для этих исключений; вне 100–599 конструктор бросает `InvalidArgumentException` |
 | `wireCodec` | `null` | `WireCodec` из `rasuvaeff/context`: разрешённые значения запроса читаются из заголовка `baggage` |
 | `baggageHeader` | `baggage` | Заголовок со значениями (W3C Baggage) |
+| `parent` | `null` | Контекст каждого запроса порождается от него — например, от контекста остановки сервера в RoadRunner; `timeSource` тогда не используется. По умолчанию `Context::background()` |
+| `correlationIdResolver` | `null` | `Closure(ServerRequestInterface): ?CorrelationId` — id, который у приложения уже есть; `null` — откат к заголовку |
+| `correlationResponseHeader` | `null` | Если задан, correlation id пишется в ответ под этим именем (заголовок, выставленный обработчиком, важнее) |
 
-У каждого запроса есть `CorrelationId`: входящий заголовок, если он валиден,
-иначе свежесгенерированный. Значение кладётся и в контекст
+У каждого запроса есть `CorrelationId`: id от резолвера, если он его вернул,
+иначе входящий заголовок, если он валиден, иначе свежесгенерированный. Значение кладётся и в контекст
 (`$context->value(CorrelationId::class)`), чтобы исходящие клиенты могли
 передать его дальше.
 
@@ -102,8 +105,10 @@ $client = new PreflightClient(
     $context,
     deadlineHeader: 'X-Request-Timeout-Ms',   // необязательно: передать оставшийся бюджет
     correlationHeader: 'X-Correlation-ID',    // необязательно: передать correlation id
+    expireTransportFailures: true,            // необязательно: сбой после дедлайна → ContextExpiredException
 );
 $response = $client->sendRequest($request);
+$next = $client->withContext($otherContext);  // та же конфигурация, контекст другого запроса
 ```
 
 Проверяет `assertActive()` перед отправкой запроса и после получения ответа.
@@ -111,6 +116,11 @@ $response = $client->sendRequest($request);
 блокирующему вызову клиента** — настройте таймаут самого клиента или
 используйте `ContextClient` с Guzzle. Явный заголовок correlation id в
 запросе важнее значения из контекста.
+
+С `expireTransportFailures: true` исключение клиента, брошенное после
+дедлайна, становится `ContextExpiredException` с исходным в `previous` (после
+отмены — `ContextCancelledException`), как в `ContextClient`. По умолчанию
+выключено, потому что меняет тип исключения.
 
 ### `ContextClient` (Guzzle)
 
@@ -122,7 +132,10 @@ $response = (new ContextClient($guzzle, deadlineHeader: 'X-Request-Timeout-Ms'))
 $controller->cancel();
 ```
 
-- Оставшийся бюджет становится `timeout` и `connect_timeout` Guzzle.
+- Оставшийся бюджет (`Context::budgetMs()`) становится `timeout` и
+  `connect_timeout` Guzzle. С `maxTimeout: 1.0` (секунды) они никогда не
+  превышают этот предел, даже если бюджет длиннее; без дедлайна ничего не
+  выставляется.
 - Тело запроса уходит своим потоком; версия протокола сохраняется.
 - `http_errors` выключен: ответ 4xx/5xx **возвращается**, как в PSR-18.
 - Сбой транспорта после исчерпания бюджета — `ContextExpiredException`, у
@@ -178,8 +191,8 @@ Trace id здесь не передаётся: это `traceparent`, зона Op
 | Класс | Описание |
 |---|---|
 | `ContextMiddleware` | PSR-15: атрибуты контекста, контроллера и correlation id; заголовок бюджета; отображение исключений в ответы |
-| `PreflightClient` | Декоратор PSR-18: проверки до и после запроса, исходящие заголовки бюджета и correlation id |
-| `ContextClient` | Guzzle-совместимый адаптер: бюджет → таймауты, семантика ошибок PSR-18, отображение истечения |
+| `PreflightClient` | Декоратор PSR-18: проверки до и после запроса, исходящие заголовки бюджета и correlation id, отображение истечения по желанию, `withContext()` |
+| `ContextClient` | Guzzle-совместимый адаптер: бюджет → таймауты (ограничены `maxTimeout`), семантика ошибок PSR-18, отображение истечения |
 | `CorrelationId` | Валидированный correlation id (`isValid()`, `generate()`) |
 
 ## Безопасность
@@ -196,8 +209,9 @@ Trace id здесь не передаётся: это `traceparent`, зона Op
   Невалидное входящее значение заменяется, а не логируется и не передаётся
   дальше — никакой инъекции в логи и неограниченных значений заголовка.
 - **Входящий бюджет — недоверенный вход**: принимаются только целые
-  миллисекунды в диапазоне 1–999999999, и он может только сократить
-  настроенный таймаут.
+  миллисекунды в диапазоне 1–999999999 (1–9 цифр, правило
+  `WireCodec::budgetFromWire()`), и он может только сократить настроенный
+  таймаут.
 - Исключения контекста, отображённые в ответы, не несут деталей; всё остальное
   уходит в ваш обработчик ошибок.
 - Все адаптеры кооперативные: не дают работе начаться и ответу быть

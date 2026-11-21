@@ -6,6 +6,7 @@ namespace Rasuvaeff\Context\Http\Tests;
 
 use Nyholm\Psr7\Request;
 use Nyholm\Psr7\Response;
+use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
@@ -15,9 +16,10 @@ use Rasuvaeff\Context\ContextController;
 use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Http\CorrelationId;
 use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
+use Rasuvaeff\Context\Http\Internal\TransportFailure;
 use Rasuvaeff\Context\Http\PreflightClient;
-use Rasuvaeff\Context\Http\Tests\Support\FakeTimeSource;
-use Rasuvaeff\Context\Http\Tests\Support\SteppingTimeSource;
+use Rasuvaeff\Context\Testing\FakeTimeSource;
+use Rasuvaeff\Context\Testing\SteppingTimeSource;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -26,6 +28,7 @@ use Testo\Test;
 #[Test]
 #[Covers(PreflightClient::class)]
 #[Covers(OutboundHeaders::class)]
+#[Covers(TransportFailure::class)]
 final class PreflightClientTest
 {
     public function checksBeforeAndAfterRequest(): void
@@ -122,6 +125,111 @@ final class PreflightClientTest
         }
 
         throw new \LogicException('an expiry was expected, the request was sent');
+    }
+
+    public function withContextKeepsTheConfigurationAndChecksTheNewContext(): void
+    {
+        $inner = $this->recordingClient();
+        [$first, $firstController] = Context::background(new FakeTimeSource())->withTimeout(1.0);
+        $client = new PreflightClient($inner, $first, deadlineHeader: 'X-Request-Timeout-Ms');
+        [$second] = Context::background(new FakeTimeSource())->withTimeout(0.25);
+        $firstController->cancel();
+
+        $client->withContext($second)->sendRequest(new Request('GET', '/'));
+
+        Assert::same($inner->request?->getHeaderLine('X-Request-Timeout-Ms'), '250');
+    }
+
+    public function aTransportFailureAfterTheDeadlineStaysAsIsByDefault(): void
+    {
+        $failure = $this->clientException();
+        [$context, $clock] = $this->expiringContext();
+
+        try {
+            (new PreflightClient($this->failingClient($failure, $clock), $context))->sendRequest(new Request('GET', '/'));
+        } catch (ClientExceptionInterface $caught) {
+            Assert::same($caught, $failure);
+
+            return;
+        }
+
+        throw new \LogicException('the transport failure was expected');
+    }
+
+    public function aTransportFailureAfterTheDeadlineIsAnExpiryWhenEnabled(): void
+    {
+        $failure = $this->clientException();
+        [$context, $clock] = $this->expiringContext();
+        $client = new PreflightClient($this->failingClient($failure, $clock), $context, expireTransportFailures: true);
+
+        try {
+            $client->sendRequest(new Request('GET', '/'));
+        } catch (ContextExpiredException $expired) {
+            Assert::same($expired->getPrevious(), $failure);
+            Assert::same($expired->deadlineNs(), $context->deadlineNs());
+
+            return;
+        }
+
+        throw new \LogicException('an expiry was expected');
+    }
+
+    public function aTransportFailureWhileActiveIsRethrownWhenEnabled(): void
+    {
+        $failure = $this->clientException();
+        [$context] = Context::background(new FakeTimeSource())->withTimeout(1.0);
+        $client = new PreflightClient($this->failingClient($failure, null), $context, expireTransportFailures: true);
+
+        try {
+            $client->sendRequest(new Request('GET', '/'));
+        } catch (ClientExceptionInterface $caught) {
+            Assert::same($caught, $failure);
+
+            return;
+        }
+
+        throw new \LogicException('the transport failure was expected');
+    }
+
+    public function withContextKeepsTheExpiryMapping(): void
+    {
+        $failure = $this->clientException();
+        [$context, $clock] = $this->expiringContext();
+        $client = (new PreflightClient($this->failingClient($failure, $clock), Context::background(), expireTransportFailures: true))
+            ->withContext($context);
+
+        Expect::exception(ContextExpiredException::class);
+
+        $client->sendRequest(new Request('GET', '/'));
+    }
+
+    /** @return array{Context, FakeTimeSource} */
+    private function expiringContext(): array
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withTimeout(1.0);
+
+        return [$context, $clock];
+    }
+
+    private function clientException(): ClientExceptionInterface
+    {
+        return new class ('timed out') extends \RuntimeException implements ClientExceptionInterface {};
+    }
+
+    private function failingClient(ClientExceptionInterface $failure, ?FakeTimeSource $clock): ClientInterface
+    {
+        return new readonly class ($failure, $clock) implements ClientInterface {
+            public function __construct(private ClientExceptionInterface $failure, private ?FakeTimeSource $clock) {}
+
+            #[\Override]
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $this->clock?->advanceMs(1_500);
+
+                throw $this->failure;
+            }
+        };
     }
 
     /**

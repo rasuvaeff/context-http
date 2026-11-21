@@ -22,10 +22,17 @@ use Rasuvaeff\Context\WireCodec;
  * Creates and owns one context for a PSR-15 request.
  *
  * - `deadlineHeader` (e.g. `X-Request-Timeout-Ms`): an incoming budget in
- *   whole milliseconds (1–999999999) shortens the configured timeout; a
- *   longer or malformed value is ignored, never trusted.
- * - The correlation header is validated ({@see CorrelationId}); when it is
- *   absent or invalid a fresh id is generated, so every request has one.
+ *   whole milliseconds shortens the configured timeout. It is read by the
+ *   same rule as {@see WireCodec::budgetFromWire()}: 1–9 digits, leading
+ *   zeros allowed, value 1–999999999; anything else is ignored, never trusted.
+ * - The correlation id comes from `correlationIdResolver` when it returns
+ *   one, else from the validated correlation header ({@see CorrelationId});
+ *   when both are missing a fresh id is generated, so every request has one.
+ *   With `correlationResponseHeader` the id is also written to the response
+ *   (a header the handler already set wins).
+ * - With a `parent`, every request context derives from it (a server's
+ *   shutdown context); `timeSource` is then ignored — the parent's clock is
+ *   used. Without one each request starts from `Context::background()`.
  * - With a `responseFactory`, a `ContextExpiredException` escaping the
  *   handler becomes `expiredStatus` (504) and a `ContextCancelledException`
  *   becomes `cancelledStatus` (499); without one they propagate.
@@ -37,8 +44,6 @@ use Rasuvaeff\Context\WireCodec;
  */
 final readonly class ContextMiddleware implements MiddlewareInterface
 {
-    private const string BUDGET_PATTERN = '/^[1-9][0-9]{0,8}\z/';
-
     /** @var float|Closure(ServerRequestInterface): float */
     private float|Closure $timeout;
 
@@ -48,6 +53,8 @@ final readonly class ContextMiddleware implements MiddlewareInterface
     /**
      * @param float|callable(ServerRequestInterface): float $timeout
      * @param null|Closure(): CorrelationId $correlationIdGenerator defaults to {@see CorrelationId::generate()}
+     * @param null|Closure(ServerRequestInterface): ?CorrelationId $correlationIdResolver
+     *        an id the application already has; `null` falls back to the header
      */
     public function __construct(
         float|callable $timeout = 30.0,
@@ -63,9 +70,18 @@ final readonly class ContextMiddleware implements MiddlewareInterface
         private int $cancelledStatus = 499,
         private ?WireCodec $wireCodec = null,
         private string $baggageHeader = 'baggage',
+        private ?Context $parent = null,
+        private ?Closure $correlationIdResolver = null,
+        private ?string $correlationResponseHeader = null,
     ) {
         if (is_float($timeout) && !is_finite($timeout)) {
             throw new \InvalidArgumentException('Timeout must be finite');
+        }
+
+        foreach (['expiredStatus' => $expiredStatus, 'cancelledStatus' => $cancelledStatus] as $name => $status) {
+            if ($status < 100 || $status > 599) {
+                throw new \InvalidArgumentException(sprintf('%s must be an HTTP status between 100 and 599, got %d', $name, $status));
+            }
         }
 
         $this->timeout = is_callable($timeout) ? Closure::fromCallable($timeout) : $timeout;
@@ -75,23 +91,16 @@ final readonly class ContextMiddleware implements MiddlewareInterface
     #[\Override]
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        [$context, $controller] = Context::background($this->timeSource)->withTimeout($this->timeoutFor($request));
+        $parent = $this->parent ?? Context::background($this->timeSource);
+        [$context, $controller] = $parent->withTimeout($this->timeoutFor($request));
 
         if ($this->wireCodec instanceof WireCodec) {
-            // The values land on a child that inherits the request deadline
-            // (the cap is unlimited, so the parent's deadline wins) and dies
-            // with the request controller below.
-            [$context] = $this->wireCodec->decode(
-                ['values' => Baggage::parse($request->getHeaderLine($this->baggageHeader))],
-                $context,
-                maxBudgetMs: \PHP_INT_MAX,
-            );
+            // The values share the request context's state: they die with
+            // the request controller below.
+            $context = $this->wireCodec->decodeValues(Baggage::parse($request->getHeaderLine($this->baggageHeader)), $context);
         }
 
-        $incoming = $request->getHeaderLine($this->correlationHeader);
-        $correlationId = CorrelationId::isValid($incoming)
-            ? new CorrelationId($incoming)
-            : ($this->correlationIdGenerator)();
+        $correlationId = $this->correlationIdFor($request);
         $context = $context->withValue(CorrelationId::class, $correlationId);
 
         $request = $request
@@ -100,14 +109,34 @@ final readonly class ContextMiddleware implements MiddlewareInterface
             ->withAttribute($this->correlationAttribute, $correlationId);
 
         try {
-            return $handler->handle($request);
+            $response = $handler->handle($request);
         } catch (ContextExpiredException $expired) {
-            return $this->mapped($expired, $this->expiredStatus);
+            $response = $this->mapped($expired, $this->expiredStatus);
         } catch (ContextCancelledException $cancelled) {
-            return $this->mapped($cancelled, $this->cancelledStatus);
+            $response = $this->mapped($cancelled, $this->cancelledStatus);
         } finally {
             $controller->cancel();
         }
+
+        if ($this->correlationResponseHeader === null || $response->hasHeader($this->correlationResponseHeader)) {
+            return $response;
+        }
+
+        return $response->withHeader($this->correlationResponseHeader, $correlationId->value);
+    }
+
+    private function correlationIdFor(ServerRequestInterface $request): CorrelationId
+    {
+        $resolved = $this->correlationIdResolver instanceof Closure ? ($this->correlationIdResolver)($request) : null;
+        if ($resolved instanceof CorrelationId) {
+            return $resolved;
+        }
+
+        $incoming = $request->getHeaderLine($this->correlationHeader);
+
+        return CorrelationId::isValid($incoming)
+            ? new CorrelationId($incoming)
+            : ($this->correlationIdGenerator)();
     }
 
     private function timeoutFor(ServerRequestInterface $request): float
@@ -120,12 +149,9 @@ final readonly class ContextMiddleware implements MiddlewareInterface
             return $timeout;
         }
 
-        $budget = $request->getHeaderLine($this->deadlineHeader);
-        if (preg_match(self::BUDGET_PATTERN, $budget) !== 1) {
-            return $timeout;
-        }
+        $budgetMs = WireCodec::budgetFromWire($request->getHeaderLine($this->deadlineHeader));
 
-        return min($timeout, (float) $budget / 1000.0);
+        return $budgetMs === null ? $timeout : min($timeout, (float) $budgetMs / 1000.0);
     }
 
     private function mapped(ContextExpiredException|ContextCancelledException $exception, int $status): ResponseInterface

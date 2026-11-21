@@ -8,12 +8,13 @@ composer require rasuvaeff/context-http
 
 ## Rules
 
-- PHP 8.3+; requires `rasuvaeff/context` ^0.2. Guzzle is optional (only for `ContextClient`).
+- PHP 8.3+; requires `rasuvaeff/context` ^0.5. Guzzle is optional (only for `ContextClient`).
 - Cooperative only: adapters refuse to start work or to hand back a response
   after the context terminated; they cannot interrupt a blocking PSR-18 call.
 - `ContextMiddleware` owns the request context and cancels it in `finally`.
-- Every request gets a `CorrelationId` (valid header, else generated).
-- An incoming budget header (`deadlineHeader`) is whole ms 1–999999999 and only
+- Every request gets a `CorrelationId` (resolver's id, else valid header, else generated).
+- An incoming budget header (`deadlineHeader`) is whole ms 1–999999999 (1–9
+  digits, leading zeros allowed: `WireCodec::budgetFromWire()`) and only
   shortens the configured timeout; anything else is ignored.
 - `ContextClient` uses `http_errors => false` (4xx/5xx returned, like PSR-18).
 
@@ -34,18 +35,25 @@ $middleware = new ContextMiddleware(
     deadlineHeader: 'X-Request-Timeout-Ms',  // ?string, null = ignore upstream budgets
     correlationIdGenerator: null,            // ?Closure(): CorrelationId, default CorrelationId::generate(...)
     responseFactory: $psr17,                 // ?ResponseFactoryInterface: expired → 504, cancelled → 499
-    expiredStatus: 504,
+    expiredStatus: 504,                      // 100..599, else InvalidArgumentException
     cancelledStatus: 499,
+    wireCodec: null,
+    baggageHeader: 'baggage',
+    parent: null,                            // ?Context: derive every request from it (shutdown context); timeSource ignored
+    correlationIdResolver: null,             // ?Closure(ServerRequestInterface): ?CorrelationId, wins over the header
+    correlationResponseHeader: null,         // ?string: echo the id on the response (handler's header wins)
 );
 // handler: $request->getAttribute(Context::class|ContextController::class|CorrelationId::class)
 // the CorrelationId is also $context->value(CorrelationId::class)
 
 $client = new PreflightClient($psr18, $context, deadlineHeader: 'X-Request-Timeout-Ms', correlationHeader: 'X-Correlation-ID');
 $client->sendRequest($request);   // assertActive() before and after; adds headers (explicit header wins)
+new PreflightClient($psr18, $context, expireTransportFailures: true);  // ClientException after deadline → ContextExpiredException(previous)
+$client->withContext($other);     // same config, another context
 
-$guzzleAdapter = new ContextClient($guzzle, deadlineHeader: null, correlationHeader: null);
+$guzzleAdapter = new ContextClient($guzzle, deadlineHeader: null, correlationHeader: null, maxTimeout: null);
 $guzzleAdapter->send($request, $context);
-// options: timeout/connect_timeout = remainingMs/1000, body = stream, version kept, http_errors=false
+// options: timeout/connect_timeout = min(budgetMs/1000, maxTimeout) (nothing without a deadline), body = stream, version kept, http_errors=false
 // transport failure: context expired → ContextExpiredException(previous = failure);
 //                    cancelled → ContextCancelledException; else rethrown
 // constructor: object without request() → InvalidArgumentException

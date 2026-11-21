@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 — 2026-11-20
+
+- Added: `ContextClient(maxTimeout:)` caps Guzzle's `timeout`/`connect_timeout`
+  at a stricter limit of the client; the default (the full budget) is unchanged (#13).
+- Added: `ContextMiddleware(correlationIdResolver:, correlationResponseHeader:)`
+  — take the correlation id from the application and echo it on the response (#14).
+- Added: `ContextMiddleware(parent:)` derives every request context from a
+  given context, e.g. a server's shutdown context (#15).
+- Added: `PreflightClient(expireTransportFailures:)` maps a client exception
+  after the deadline to `ContextExpiredException` (opt-in), and
+  `PreflightClient::withContext()` reuses the configuration for another
+  context (#16).
+- Changed: the budget header is read by `rasuvaeff/context`'s
+  `WireCodec::budgetFromWire()`, the one rule shared with `WireCodec::decode()`;
+  it now also accepts leading zeros (`"007"`), nothing previously accepted is
+  rejected (#17).
+- Changed: `ContextMiddleware` rejects an `expiredStatus`/`cancelledStatus`
+  outside 100–599 in the constructor instead of on first use (#19).
+- Adapters use `Context::budgetMs()` and `WireCodec::encodeValues()`/`decodeValues()`;
+  baggage values now live on the request context itself instead of a derived child.
+- Tests use the core `Rasuvaeff\Context\Testing` clocks; new property tests for
+  `CorrelationId::isValid()` (accept ⇔ charset) and the budget header (#20).
+- Requires `rasuvaeff/context` ^0.5.
+
 ## 0.3.1 — 2026-11-20
 
 - Fixed: an outgoing `baggage` header already over 8192 bytes is passed through unchanged instead of losing the members of other propagators; nothing is added to it (#18).

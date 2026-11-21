@@ -24,13 +24,15 @@ final readonly class OutboundHeaders
     ) {}
 
     /**
-     * `$remainingMs` is read by the caller before its `assertActive()`, so
-     * the header never carries the `0` of an expired context.
+     * `$budgetMs` comes from the caller's `Context::budgetMs()`, so the
+     * header never carries the `0` of an expired context.
+     *
+     * @param positive-int|null $budgetMs
      */
-    public function apply(RequestInterface $request, Context $context, ?float $remainingMs): RequestInterface
+    public function apply(RequestInterface $request, Context $context, ?int $budgetMs): RequestInterface
     {
-        if ($this->deadlineHeader !== null && $remainingMs !== null) {
-            $request = $request->withHeader($this->deadlineHeader, (string) (int) $remainingMs);
+        if ($this->deadlineHeader !== null && $budgetMs !== null) {
+            $request = $request->withHeader($this->deadlineHeader, (string) $budgetMs);
         }
 
         $correlationId = $context->value(CorrelationId::class);
@@ -44,7 +46,7 @@ final readonly class OutboundHeaders
 
         $baggage = Baggage::merge(
             $request->getHeaderLine($this->baggageHeader),
-            $this->wireCodec->encode($context)['values'],
+            $this->wireCodec->encodeValues($context),
         );
 
         return $baggage === '' ? $request : $request->withHeader($this->baggageHeader, $baggage);

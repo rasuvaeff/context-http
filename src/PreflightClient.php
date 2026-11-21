@@ -10,6 +10,7 @@ use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Rasuvaeff\Context\Context;
 use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
+use Rasuvaeff\Context\Http\Internal\TransportFailure;
 use Rasuvaeff\Context\WireCodec;
 
 /**
@@ -22,6 +23,12 @@ use Rasuvaeff\Context\WireCodec;
  * service how much time is left; with `correlationHeader` it forwards the
  * context's `CorrelationId` (an explicit header on the request wins).
  *
+ * With `expireTransportFailures` a client exception thrown after the
+ * deadline passed surfaces as `ContextExpiredException` (the original as
+ * `previous`), as in {@see ContextClient}; it is off by default because it
+ * changes the exception type. {@see withContext()} reuses the configuration
+ * for another request.
+ *
  * @api
  */
 final readonly class PreflightClient implements ClientInterface
@@ -31,12 +38,29 @@ final readonly class PreflightClient implements ClientInterface
     public function __construct(
         private ClientInterface $client,
         private Context $context,
-        ?string $deadlineHeader = null,
-        ?string $correlationHeader = null,
-        ?WireCodec $wireCodec = null,
-        string $baggageHeader = 'baggage',
+        private ?string $deadlineHeader = null,
+        private ?string $correlationHeader = null,
+        private ?WireCodec $wireCodec = null,
+        private string $baggageHeader = 'baggage',
+        private bool $expireTransportFailures = false,
     ) {
         $this->outbound = new OutboundHeaders($deadlineHeader, $correlationHeader, $wireCodec, $baggageHeader);
+    }
+
+    /**
+     * The same client and configuration, checking `$context` instead.
+     */
+    public function withContext(Context $context): self
+    {
+        return new self(
+            client: $this->client,
+            context: $context,
+            deadlineHeader: $this->deadlineHeader,
+            correlationHeader: $this->correlationHeader,
+            wireCodec: $this->wireCodec,
+            baggageHeader: $this->baggageHeader,
+            expireTransportFailures: $this->expireTransportFailures,
+        );
     }
 
     /**
@@ -45,9 +69,18 @@ final readonly class PreflightClient implements ClientInterface
     #[\Override]
     public function sendRequest(RequestInterface $request): ResponseInterface
     {
-        $remainingMs = $this->context->remainingMs();
-        $this->context->assertActive();
-        $response = $this->client->sendRequest($this->outbound->apply($request, $this->context, $remainingMs));
+        $request = $this->outbound->apply($request, $this->context, $this->context->budgetMs());
+
+        try {
+            $response = $this->client->sendRequest($request);
+        } catch (ClientExceptionInterface $failure) {
+            if ($this->expireTransportFailures) {
+                TransportFailure::rethrow($failure, $this->context);
+            }
+
+            throw $failure;
+        }
+
         $this->context->assertActive();
 
         return $response;

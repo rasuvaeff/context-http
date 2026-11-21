@@ -13,17 +13,20 @@ use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Http\ContextClient;
 use Rasuvaeff\Context\Http\CorrelationId;
 use Rasuvaeff\Context\Http\Internal\OutboundHeaders;
-use Rasuvaeff\Context\Http\Tests\Support\FakeTimeSource;
+use Rasuvaeff\Context\Http\Internal\TransportFailure;
 use Rasuvaeff\Context\Http\Tests\Support\RecordingGuzzle;
-use Rasuvaeff\Context\Http\Tests\Support\SteppingTimeSource;
+use Rasuvaeff\Context\Testing\FakeTimeSource;
+use Rasuvaeff\Context\Testing\SteppingTimeSource;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Test;
 
 #[Test]
 #[Covers(ContextClient::class)]
 #[Covers(OutboundHeaders::class)]
+#[Covers(TransportFailure::class)]
 final class ContextClientTest
 {
     public function mapsTheRemainingBudgetAndKeepsTheRequestIntact(): void
@@ -54,6 +57,52 @@ final class ContextClientTest
 
         Assert::false(\array_key_exists('timeout', $guzzle->call['options']));
         Assert::false(\array_key_exists('connect_timeout', $guzzle->call['options']));
+    }
+
+    public function aStricterMaxTimeoutWinsOverTheBudget(): void
+    {
+        $guzzle = RecordingGuzzle::responding(new Response(204));
+        [$context] = Context::background(new FakeTimeSource())->withTimeout(30.0);
+
+        (new ContextClient($guzzle, maxTimeout: 1.5))->send(new Request('GET', 'https://example.test'), $context);
+
+        Assert::same($guzzle->call['options']['timeout'], 1.5);
+        Assert::same($guzzle->call['options']['connect_timeout'], 1.5);
+    }
+
+    public function aShorterBudgetWinsOverTheMaxTimeout(): void
+    {
+        $guzzle = RecordingGuzzle::responding(new Response(204));
+        [$context] = Context::background(new FakeTimeSource())->withTimeout(0.25);
+
+        (new ContextClient($guzzle, maxTimeout: 1.5))->send(new Request('GET', 'https://example.test'), $context);
+
+        Assert::same($guzzle->call['options']['timeout'], 0.25);
+    }
+
+    public function aMaxTimeoutWithoutADeadlineSetsNothing(): void
+    {
+        $guzzle = RecordingGuzzle::responding(new Response(204));
+
+        (new ContextClient($guzzle, maxTimeout: 1.5))->send(new Request('GET', 'https://example.test'), Context::background());
+
+        Assert::false(\array_key_exists('timeout', $guzzle->call['options']));
+    }
+
+    #[DataProvider('invalidMaxTimeoutProvider')]
+    public function rejectsAnInvalidMaxTimeout(float $maxTimeout): void
+    {
+        Expect::exception(\InvalidArgumentException::class)->withMessage('Max timeout must be a finite positive number of seconds');
+
+        new ContextClient(RecordingGuzzle::responding(new Response(204)), maxTimeout: $maxTimeout);
+    }
+
+    public static function invalidMaxTimeoutProvider(): iterable
+    {
+        yield 'zero' => [0.0];
+        yield 'negative' => [-1.0];
+        yield 'infinite' => [\INF];
+        yield 'nan' => [\NAN];
     }
 
     public function errorStatusesAreReturnedNotThrown(): void
