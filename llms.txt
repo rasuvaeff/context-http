@@ -8,7 +8,7 @@ composer require rasuvaeff/context-http
 
 ## Rules
 
-- PHP 8.3+; requires `rasuvaeff/context` ^0.5. Guzzle is optional (only for `ContextClient`).
+- PHP 8.3 – 8.6; requires `rasuvaeff/context` ^0.5. Guzzle is optional (only for `ContextClient`).
 - Cooperative only: adapters refuse to start work or to hand back a response
   after the context terminated; they cannot interrupt a blocking PSR-18 call.
 - `ContextMiddleware` owns the request context and cancels it in `finally`.
