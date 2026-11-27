@@ -15,7 +15,10 @@ HTTP adapters for `Rasuvaeff\Context\Context`.
 
 1. `ContextMiddleware` owns one context per PSR-15 request and publishes the
    context/controller as request attributes. It cancels the controller in
-   `finally`.
+   `finally`, also when preparing the request throws. A context that is
+   already cancelled or expired (terminated `parent`, zero budget) never
+   reaches the handler: 499/504 with a `responseFactory`, else the exception
+   propagates. After that the handler must call `assertActive()` itself.
 2. `PreflightClient` only checks before and after generic PSR-18
    `sendRequest()`. PSR-18 has no transport-options argument, so it cannot
    enforce an in-flight timeout.

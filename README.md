@@ -33,9 +33,12 @@ These adapters bound how long a request **waits**; they do not abort work
 already running. See the transport matrix in
 [`rasuvaeff/context`](https://github.com/rasuvaeff/context#limitations).
 
-- **`ContextMiddleware` does not stop the handler.** The deadline is observed
-  only where the handler calls `assertActive()` (directly or through an
-  adapter); the 504/499 mapping applies to the exception that call throws.
+- **`ContextMiddleware` does not stop the handler.** It checks the context
+  once before calling the handler: a context that is already cancelled or
+  expired (a terminated `parent`, a zero budget) never reaches the handler.
+  After that the deadline is observed only where the handler calls
+  `assertActive()` (directly or through an adapter); the 504/499 mapping
+  applies to the exception that call throws.
   It does not detect a client disconnect either — `499` is produced only if
   your code cancels the controller. Keep the budget below the server's own
   limit (PHP-FPM `request_terminate_timeout`, PHP `max_execution_time`), or
@@ -53,7 +56,11 @@ already running. See the transport matrix in
 ### `ContextMiddleware` (PSR-15)
 
 Creates one context per request, publishes it as request attributes and
-cancels it in `finally`:
+cancels it in `finally` — also when preparing the request (baggage,
+correlation id) throws, so a long-lived `parent` never keeps a request
+context. A context that is already cancelled or expired is answered without
+calling the handler (`cancelledStatus` / `expiredStatus` with a
+`responseFactory`, otherwise the exception propagates):
 
 ```php
 use Rasuvaeff\Context\Context;
