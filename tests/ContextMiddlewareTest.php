@@ -16,6 +16,7 @@ use Rasuvaeff\Context\ContextController;
 use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Http\ContextMiddleware;
 use Rasuvaeff\Context\Http\CorrelationId;
+use Rasuvaeff\Context\Http\Tests\Support\RawHeaderServerRequest;
 use Rasuvaeff\Context\Testing\FakeTimeSource;
 use Rasuvaeff\Context\WireCodec;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
@@ -102,7 +103,10 @@ final class ContextMiddlewareTest
     #[DataProvider('deadlineHeaderProvider')]
     public function anIncomingBudgetOnlyShortensTheTimeout(string $header, float $expectedMs): void
     {
-        $request = (new ServerRequest('GET', '/'))->withHeader('X-Request-Timeout-Ms', $header);
+        // Raw bytes, as a server may deliver them: PSR-7 implementations
+        // differ in what withHeader() accepts (nyholm/psr7 1.8.3 rejects a
+        // trailing newline), and the middleware must not rely on that.
+        $request = new RawHeaderServerRequest('GET', '/', ['X-Request-Timeout-Ms' => $header]);
         $middleware = new ContextMiddleware(
             timeout: 2.0,
             timeSource: new FakeTimeSource(),
@@ -127,6 +131,7 @@ final class ContextMiddlewareTest
         yield 'exponent' => ['1e3', 2000.0];
         yield 'fraction' => ['1.5', 2000.0];
         yield 'trailing newline' => ["750\n", 2000.0];
+        yield 'leading space' => [' 750', 2000.0];
         yield 'out of range' => ['1000000000', 2000.0];
         yield 'empty' => ['', 2000.0];
     }
