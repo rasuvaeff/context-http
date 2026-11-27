@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context\Http\Tests;
 
+use Closure;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Nyholm\Psr7\Response;
 use Nyholm\Psr7\ServerRequest;
@@ -17,6 +18,7 @@ use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Http\ContextMiddleware;
 use Rasuvaeff\Context\Http\CorrelationId;
 use Rasuvaeff\Context\Http\Tests\Support\RawHeaderServerRequest;
+use Rasuvaeff\Context\Http\Tests\Support\StateInspector;
 use Rasuvaeff\Context\Testing\FakeTimeSource;
 use Rasuvaeff\Context\WireCodec;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
@@ -335,6 +337,158 @@ final class ContextMiddlewareTest
         Assert::same($response->getStatusCode(), 499);
     }
 
+    /**
+     * Preparing the request (baggage, correlation id, attributes) runs after
+     * the request controller exists: a failure there must still detach the
+     * request context from a long-lived parent and keep its own exception.
+     */
+    #[DataProvider('failingPreparationProvider')]
+    public function aFailureWhilePreparingTheRequestDetachesTheRequestContext(?Closure $generator, ?Closure $resolver): void
+    {
+        [$parent] = Context::background()->withCancel();
+        $handler = $this->countingHandler();
+        $middleware = new ContextMiddleware(
+            correlationIdGenerator: $generator,
+            parent: $parent,
+            correlationIdResolver: $resolver,
+        );
+
+        for ($i = 0; $i < 3; ++$i) {
+            try {
+                $middleware->process(new ServerRequest('GET', '/'), $handler);
+                Assert::fail('The preparation failure must propagate');
+            } catch (\DomainException $e) {
+                Assert::same($e->getMessage(), 'preparation failed');
+            }
+        }
+
+        Assert::same(StateInspector::childCount($parent), 0);
+        Assert::same($handler->calls, 0);
+        Assert::false($parent->isTerminated());
+    }
+
+    public static function failingPreparationProvider(): iterable
+    {
+        $fail = static fn(): never => throw new \DomainException('preparation failed');
+
+        yield 'correlation id generator' => [$fail, null];
+        yield 'correlation id resolver' => [null, $fail];
+    }
+
+    public function aContextExceptionWhilePreparingIsMappedWithoutACorrelationHeader(): void
+    {
+        [$parent] = Context::background()->withCancel();
+        $handler = $this->countingHandler();
+        $middleware = new ContextMiddleware(
+            responseFactory: new Psr17Factory(),
+            parent: $parent,
+            correlationIdResolver: static fn(): never => throw new ContextCancelledException(),
+            correlationResponseHeader: 'X-Correlation-ID',
+        );
+
+        $response = $middleware->process(new ServerRequest('GET', '/'), $handler);
+
+        Assert::same($response->getStatusCode(), 499);
+        Assert::false($response->hasHeader('X-Correlation-ID'));
+        Assert::same($handler->calls, 0);
+        Assert::same(StateInspector::childCount($parent), 0);
+    }
+
+    public function aCompletedRequestDetachesTheRequestContext(): void
+    {
+        [$parent] = Context::background()->withCancel();
+        $middleware = new ContextMiddleware(parent: $parent);
+
+        $middleware->process(new ServerRequest('GET', '/'), $this->recordingHandler());
+
+        try {
+            $middleware->process(new ServerRequest('GET', '/'), $this->throwingHandler(new \DomainException('handler failed')));
+        } catch (\DomainException) {
+        }
+
+        Assert::same(StateInspector::childCount($parent), 0);
+    }
+
+    /**
+     * A context that is already terminated never reaches the handler, even
+     * one that does not check the context itself.
+     */
+    #[DataProvider('terminatedBeforeTheHandlerProvider')]
+    public function aTerminatedContextNeverReachesTheHandler(Closure $middleware, int $expectedStatus): void
+    {
+        $handler = $this->countingHandler();
+
+        $response = $middleware()->process(new ServerRequest('GET', '/'), $handler);
+
+        Assert::same($handler->calls, 0);
+        Assert::same($response->getStatusCode(), $expectedStatus);
+        Assert::same($response->getHeaderLine('X-Correlation-ID'), 'fixed');
+    }
+
+    public static function terminatedBeforeTheHandlerProvider(): iterable
+    {
+        $options = [
+            'responseFactory' => new Psr17Factory(),
+            'correlationIdGenerator' => static fn(): CorrelationId => new CorrelationId('fixed'),
+            'correlationResponseHeader' => 'X-Correlation-ID',
+        ];
+
+        yield 'cancelled parent' => [static function () use ($options): ContextMiddleware {
+            [$parent, $controller] = Context::background()->withCancel();
+            $controller->cancel();
+
+            return new ContextMiddleware(...[...$options, 'parent' => $parent]);
+        }, 499];
+
+        yield 'expired parent' => [static function () use ($options): ContextMiddleware {
+            $clock = new FakeTimeSource();
+            [$parent] = Context::background($clock)->withTimeout(0.5);
+            $clock->advanceMs(500);
+
+            return new ContextMiddleware(...[...$options, 'parent' => $parent]);
+        }, 504];
+
+        yield 'zero budget' => [static fn(): ContextMiddleware => new ContextMiddleware(...[
+            ...$options,
+            'timeout' => 0.0,
+            'timeSource' => new FakeTimeSource(),
+        ]), 504];
+
+        yield 'negative budget' => [static fn(): ContextMiddleware => new ContextMiddleware(...[
+            ...$options,
+            'timeout' => -1.0,
+            'timeSource' => new FakeTimeSource(),
+        ]), 504];
+    }
+
+    #[DataProvider('terminatedWithoutAFactoryProvider')]
+    public function withoutAFactoryATerminatedContextThrowsBeforeTheHandler(Context $parent, string $exception): void
+    {
+        $handler = $this->countingHandler();
+        Expect::exception($exception);
+
+        try {
+            (new ContextMiddleware(parent: $parent))->process(new ServerRequest('GET', '/'), $handler);
+        } finally {
+            Assert::same($handler->calls, 0);
+            Assert::same(StateInspector::childCount($parent), 0);
+        }
+    }
+
+    public static function terminatedWithoutAFactoryProvider(): iterable
+    {
+        [$cancelled, $controller] = Context::background()->withCancel();
+        $controller->cancel();
+
+        yield 'cancelled' => [$cancelled, ContextCancelledException::class];
+
+        $clock = new FakeTimeSource();
+        [$expired] = Context::background($clock)->withTimeout(0.5);
+        $clock->advanceMs(1000);
+
+        yield 'expired' => [$expired, ContextExpiredException::class];
+    }
+
     public function aResolvedCorrelationIdWinsOverTheHeader(): void
     {
         $request = (new ServerRequest('GET', '/'))->withHeader('X-Correlation-ID', 'from-header');
@@ -428,6 +582,26 @@ final class ContextMiddlewareTest
                 $this->request = $request;
                 $context = $request->getAttribute(Context::class);
                 $this->remainingMs = $context instanceof Context ? $context->remainingMs() : null;
+
+                return new Response(204);
+            }
+        };
+    }
+
+    /**
+     * A handler that never looks at the context.
+     *
+     * @return RequestHandlerInterface&object{calls: int}
+     */
+    private function countingHandler(): RequestHandlerInterface
+    {
+        return new class implements RequestHandlerInterface {
+            public int $calls = 0;
+
+            #[\Override]
+            public function handle(ServerRequestInterface $request): ResponseInterface
+            {
+                ++$this->calls;
 
                 return new Response(204);
             }

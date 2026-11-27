@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- **Fixed:** `ContextMiddleware` cancels the request controller also when
+  preparing the request throws (baggage decoding, `correlationIdGenerator`,
+  `correlationIdResolver`, attribute assignment); before, every such failure
+  left the request context attached to a long-lived `parent`. The original
+  exception propagates unchanged; a context exception thrown there is mapped
+  by `responseFactory` like one from the handler (#26).
+- **Fixed:** `ContextMiddleware` no longer calls the handler for a request
+  context that is already cancelled or expired (a terminated `parent`, a zero
+  or negative budget). With a `responseFactory` the request is answered with
+  `cancelledStatus` / `expiredStatus`; without one the
+  `ContextCancelledException` / `ContextExpiredException` propagates before
+  the handler runs (#27).
+- **Changed (tests):** the budget-header dataset feeds raw header values to
+  the middleware through a request double: nyholm/psr7 1.8.3 rejects a
+  trailing newline in `withHeader()`.
+
 ## 0.4.1 — 2026-11-22
 
 - **Changed:** PHP 8.6 is supported: the `php` constraint is widened to

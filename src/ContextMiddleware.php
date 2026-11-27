@@ -33,9 +33,12 @@ use Rasuvaeff\Context\WireCodec;
  * - With a `parent`, every request context derives from it (a server's
  *   shutdown context); `timeSource` is then ignored — the parent's clock is
  *   used. Without one each request starts from `Context::background()`.
- * - With a `responseFactory`, a `ContextExpiredException` escaping the
- *   handler becomes `expiredStatus` (504) and a `ContextCancelledException`
- *   becomes `cancelledStatus` (499); without one they propagate.
+ * - A request context that is already cancelled or expired (a terminated
+ *   `parent`, a zero budget) never reaches the handler.
+ * - With a `responseFactory`, a `ContextExpiredException` (from that check or
+ *   escaping the handler) becomes `expiredStatus` (504) and a
+ *   `ContextCancelledException` becomes `cancelledStatus` (499); without one
+ *   they propagate.
  * - With a `wireCodec`, allow-listed values are read from the W3C `baggage`
  *   header through `WireValue::fromWire()`; an invalid value is dropped,
  *   never thrown — the header is untrusted input.
@@ -94,21 +97,30 @@ final readonly class ContextMiddleware implements MiddlewareInterface
         $parent = $this->parent ?? Context::background($this->timeSource);
         [$context, $controller] = $parent->withTimeout($this->timeoutFor($request));
 
-        if ($this->wireCodec instanceof WireCodec) {
-            // The values share the request context's state: they die with
-            // the request controller below.
-            $context = $this->wireCodec->decodeValues(Baggage::parse($request->getHeaderLine($this->baggageHeader)), $context);
-        }
-
-        $correlationId = $this->correlationIdFor($request);
-        $context = $context->withValue(CorrelationId::class, $correlationId);
-
-        $request = $request
-            ->withAttribute($this->contextAttribute, $context)
-            ->withAttribute($this->controllerAttribute, $controller)
-            ->withAttribute($this->correlationAttribute, $correlationId);
+        // Everything after the controller exists runs under its cleanup: a
+        // failure while preparing the request must not leave the request
+        // context attached to a long-lived parent.
+        $correlationId = null;
 
         try {
+            if ($this->wireCodec instanceof WireCodec) {
+                // The values share the request context's state: they die
+                // with the request controller below.
+                $context = $this->wireCodec->decodeValues(Baggage::parse($request->getHeaderLine($this->baggageHeader)), $context);
+            }
+
+            $correlationId = $this->correlationIdFor($request);
+            $context = $context->withValue(CorrelationId::class, $correlationId);
+
+            $request = $request
+                ->withAttribute($this->contextAttribute, $context)
+                ->withAttribute($this->controllerAttribute, $controller)
+                ->withAttribute($this->correlationAttribute, $correlationId);
+
+            // A context that is already cancelled or expired (a terminated
+            // parent, a zero budget) never reaches the handler.
+            $context->assertActive();
+
             $response = $handler->handle($request);
         } catch (ContextExpiredException $expired) {
             $response = $this->mapped($expired, $this->expiredStatus);
@@ -118,7 +130,11 @@ final readonly class ContextMiddleware implements MiddlewareInterface
             $controller->cancel();
         }
 
-        if ($this->correlationResponseHeader === null || $response->hasHeader($this->correlationResponseHeader)) {
+        if (
+            $this->correlationResponseHeader === null
+            || !$correlationId instanceof CorrelationId
+            || $response->hasHeader($this->correlationResponseHeader)
+        ) {
             return $response;
         }
 

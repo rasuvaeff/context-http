@@ -33,9 +33,11 @@ composer require rasuvaeff/context-http
 работу. Матрица транспортов — в
 [`rasuvaeff/context`](https://github.com/rasuvaeff/context#limitations).
 
-- **`ContextMiddleware` не останавливает handler.** Дедлайн замечается только
-  там, где handler вызывает `assertActive()` (сам или через адаптер); маппинг
-  в 504/499 применяется к исключению из этого вызова. Отключение клиента он
+- **`ContextMiddleware` не останавливает handler.** Перед вызовом handler он
+  один раз проверяет контекст: уже отменённый или истёкший контекст
+  (завершённый `parent`, нулевой бюджет) до handler не доходит. Дальше дедлайн
+  замечается только там, где handler вызывает `assertActive()` (сам или через
+  адаптер); маппинг в 504/499 применяется к исключению из этого вызова. Отключение клиента он
   тоже не обнаруживает — `499` появляется, только если ваш код отменил
   контроллер. Держите бюджет ниже собственного лимита сервера (PHP-FPM
   `request_terminate_timeout`, PHP `max_execution_time`), иначе воркер будет
@@ -54,7 +56,11 @@ composer require rasuvaeff/context-http
 ### `ContextMiddleware` (PSR-15)
 
 Создаёт по контексту на запрос, публикует его в атрибутах запроса и отменяет
-в `finally`:
+в `finally` — в том числе когда исключение бросает подготовка запроса
+(baggage, correlation id), так что долгоживущий `parent` не удерживает
+контекст запроса. На уже отменённый или истёкший контекст отвечает без вызова
+handler (`cancelledStatus` / `expiredStatus` при заданном `responseFactory`,
+иначе исключение пробрасывается):
 
 ```php
 use Rasuvaeff\Context\Context;
